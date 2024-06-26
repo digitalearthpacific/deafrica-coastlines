@@ -374,7 +374,6 @@ def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_si
         vector_mask = xr_vectorize(
             arr,
             crs=yearly_ds.geobox.crs,
-            transform=yearly_ds.geobox.affine,
             attribute_col="certainty",
         )
 
@@ -699,14 +698,14 @@ def annual_movements(
         towards the ocean.
     """
 
-    def _point_interp(points, array, **kwargs):
-        points_gs = gpd.GeoSeries(points)
-        x_vals = xr.DataArray(points_gs.x, dims="z")
-        y_vals = xr.DataArray(points_gs.y, dims="z")
-        return array.interp(x=x_vals, y=y_vals, **kwargs)
+    def _point_value(points, array, **kwargs):
+        points_da = points.get_coordinates().to_xarray()
+        return array.sel(points_da, method="nearest", **kwargs)
 
     # Get array of water index values for baseline time period
-    baseline_array = yearly_ds[water_index].sel(year=int(baseline_year))
+    water = 1
+    yearly_ds_unmasked = yearly_ds.where(~np.isnan(yearly_ds), water)
+    baseline_array = yearly_ds_unmasked[water_index].sel(year=int(baseline_year))
 
     # Copy baseline point geometry to new column in points dataset
     points_gdf["p_baseline"] = points_gdf.geometry
@@ -739,10 +738,8 @@ def annual_movements(
         comp_array = yearly_ds[water_index].sel(year=int(comp_year))
 
         # Sample water index values for baseline and comparison points
-        points_gdf["index_comp_p1"] = _point_interp(
-            points_gdf["p_baseline"], comp_array
-        )
-        points_gdf["index_baseline_p2"] = _point_interp(
+        points_gdf["index_comp_p1"] = _point_value(points_gdf["p_baseline"], comp_array)
+        points_gdf["index_baseline_p2"] = _point_value(
             points_gdf[f"p_{comp_year}"], baseline_array
         )
 
@@ -1015,9 +1012,9 @@ def calculate_regressions(points_gdf, contours_gdf):
         ),
         axis=1,
     )
-    points_gdf[
-        ["rate_time", "incpt_time", "sig_time", "se_time", "outl_time"]
-    ] = rate_out
+    points_gdf[["rate_time", "incpt_time", "sig_time", "se_time", "outl_time"]] = (
+        rate_out
+    )
 
     # Copy slope and intercept into points_subset so they can be
     # used to temporally de-trend annual distances
@@ -1515,15 +1512,15 @@ def generate_vectors(
         points_gdf.loc[
             rocky_shoreline_flag(points_gdf, geomorphology_gdf), "certainty"
         ] = "likely rocky coastline"
-        points_gdf.loc[
-            points_gdf.rate_time.abs() > 200, "certainty"
-        ] = "extreme value (> 200 m)"
-        points_gdf.loc[
-            points_gdf.angle_std > 30, "certainty"
-        ] = "high angular variability"
-        points_gdf.loc[
-            points_gdf.valid_obs < 15, "certainty"
-        ] = "insufficient observations"
+        points_gdf.loc[points_gdf.rate_time.abs() > 200, "certainty"] = (
+            "extreme value (> 200 m)"
+        )
+        points_gdf.loc[points_gdf.angle_std > 30, "certainty"] = (
+            "high angular variability"
+        )
+        points_gdf.loc[points_gdf.valid_obs < 15, "certainty"] = (
+            "insufficient observations"
+        )
 
         # Generate a geohash UID for each point and set as index
         uids = (
