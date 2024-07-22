@@ -303,7 +303,9 @@ def temporal_masking(ds):
     return temporal_mask
 
 
-def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_size=128):
+def certainty_masking(
+    yearly_ds, variation_var, obs_threshold=5, variation_threshold=0.3, sieve_size=128
+):
     """
     Generate annual vector polygon masks containing information
     about the certainty of each extracted shoreline feature.
@@ -316,6 +318,7 @@ def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_si
     yearly_ds : xarray.Dataset
         An `xarray.Dataset` containing annual DE Africa Coastlines
         rasters.
+    variation_var: str
     obs_threshold : int, optional
         The minimum number of post-gapfilling Landsat observations
         required for an extracted shoreline to be considered good
@@ -348,8 +351,7 @@ def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_si
         analysis.
     """
 
-    # Identify problematic pixels
-    high_stdev = yearly_ds["stdev"] > stdev_threshold
+    high_variation = yearly_ds[variation_var] > variation_threshold
     low_obs = yearly_ds["count"] < obs_threshold
 
     # Create raster mask with values of 0 for good data, values of
@@ -357,7 +359,7 @@ def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_si
     # Clean this by sieving to merge small areas of pixels into
     # their neighbours
     raster_mask = (
-        high_stdev.where(~low_obs, 2)
+        high_variation.where(~low_obs, 2)
         .groupby("year")
         .apply(lambda x: sieve(x.values.astype(np.int16), size=sieve_size))
     )
@@ -374,6 +376,7 @@ def certainty_masking(yearly_ds, obs_threshold=5, stdev_threshold=0.25, sieve_si
         vector_mask = xr_vectorize(
             arr,
             crs=yearly_ds.geobox.crs,
+            # transform=yearly_ds.geobox.affine,
             attribute_col="certainty",
         )
 
@@ -698,14 +701,14 @@ def annual_movements(
         towards the ocean.
     """
 
-    def _point_value(points, array, **kwargs):
-        points_da = points.get_coordinates().to_xarray()
-        return array.sel(points_da, method="nearest", **kwargs)
+    def _point_interp(points, array, **kwargs):
+        points_gs = gpd.GeoSeries(points)
+        x_vals = xr.DataArray(points_gs.x, dims="z")
+        y_vals = xr.DataArray(points_gs.y, dims="z")
+        return array.interp(x=x_vals, y=y_vals, **kwargs)
 
     # Get array of water index values for baseline time period
-    water = 1
-    yearly_ds_unmasked = yearly_ds.where(~np.isnan(yearly_ds), water)
-    baseline_array = yearly_ds_unmasked[water_index].sel(year=int(baseline_year))
+    baseline_array = yearly_ds[water_index].sel(year=int(baseline_year))
 
     # Copy baseline point geometry to new column in points dataset
     points_gdf["p_baseline"] = points_gdf.geometry
@@ -738,8 +741,10 @@ def annual_movements(
         comp_array = yearly_ds[water_index].sel(year=int(comp_year))
 
         # Sample water index values for baseline and comparison points
-        points_gdf["index_comp_p1"] = _point_value(points_gdf["p_baseline"], comp_array)
-        points_gdf["index_baseline_p2"] = _point_value(
+        points_gdf["index_comp_p1"] = _point_interp(
+            points_gdf["p_baseline"], comp_array
+        )
+        points_gdf["index_baseline_p2"] = _point_interp(
             points_gdf[f"p_{comp_year}"], baseline_array
         )
 
